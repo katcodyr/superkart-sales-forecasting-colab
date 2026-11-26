@@ -348,67 +348,180 @@ def predict_online():
 
 @app.post("/v1/predictbatch")
 def predict_batch():
-    """Generate predictions for multiple JSON feature records."""
-
-    if not request.is_json:
-        return jsonify(
-            {
-                "error": (
-                    "Request Content-Type must be "
-                    "application/json."
-                )
-            }
-        ), 415
-
-    payload = request.get_json(
-        silent=True
-    )
-
-    if payload is None:
-        return jsonify(
-            {
-                "error": "The request body is not valid JSON."
-            }
-        ), 400
-
-    if isinstance(payload, dict):
-        records = payload.get(
-            "records"
-        )
-    else:
-        records = payload
-
-    if not isinstance(records, list):
-        return jsonify(
-            {
-                "error": (
-                    "Batch request must be a JSON list "
-                    "or an object containing a records list."
-                )
-            }
-        ), 400
-
-    if len(records) == 0:
-        return jsonify(
-            {
-                "error": (
-                    "Batch request must contain at "
-                    "least one record."
-                )
-            }
-        ), 400
+    """Generate predictions from multipart CSV or JSON records."""
 
     try:
+        request_format = None
+
+        # ----------------------------------------------------
+        # A. Course-provided multipart CSV file contract
+        # ----------------------------------------------------
+
+        if "file" in request.files:
+            uploaded_file = request.files["file"]
+
+            if (
+                uploaded_file is None
+                or uploaded_file.filename == ""
+            ):
+                raise RequestValidationError(
+                    "A nonempty CSV file must be "
+                    "submitted using the file field."
+                )
+
+            try:
+                batch_dataframe = pd.read_csv(
+                    uploaded_file
+                )
+
+            except Exception as error:
+                raise RequestValidationError(
+                    "The uploaded file could not "
+                    "be read as CSV."
+                ) from error
+
+            if batch_dataframe.empty:
+                raise RequestValidationError(
+                    "The uploaded CSV file "
+                    "contains no records."
+                )
+
+            missing_columns = [
+                feature_name
+                for feature_name in MODEL_FEATURES
+                if feature_name
+                not in batch_dataframe.columns
+            ]
+
+            unexpected_columns = [
+                column_name
+                for column_name
+                in batch_dataframe.columns
+                if column_name
+                not in MODEL_FEATURES
+            ]
+
+            if missing_columns:
+                raise RequestValidationError(
+                    "Missing required columns: "
+                    + ", ".join(
+                        missing_columns
+                    )
+                )
+
+            if unexpected_columns:
+                raise RequestValidationError(
+                    "Unexpected columns: "
+                    + ", ".join(
+                        unexpected_columns
+                    )
+                )
+
+            batch_dataframe = (
+                batch_dataframe.loc[
+                    :,
+                    MODEL_FEATURES,
+                ]
+                .copy()
+            )
+
+            if (
+                batch_dataframe
+                .isna()
+                .any()
+                .any()
+            ):
+                raise RequestValidationError(
+                    "The uploaded CSV contains "
+                    "missing feature values."
+                )
+
+            records = (
+                batch_dataframe
+                .to_dict(
+                    orient="records"
+                )
+            )
+
+            request_format = (
+                "multipart_csv"
+            )
+
+        # ----------------------------------------------------
+        # B. Existing JSON records contract
+        # ----------------------------------------------------
+
+        elif request.is_json:
+            payload = request.get_json(
+                silent=True
+            )
+
+            if payload is None:
+                raise RequestValidationError(
+                    "The request body is not "
+                    "valid JSON."
+                )
+
+            if isinstance(
+                payload,
+                dict,
+            ):
+                records = payload.get(
+                    "records"
+                )
+
+            else:
+                records = payload
+
+            if not isinstance(
+                records,
+                list,
+            ):
+                raise RequestValidationError(
+                    "Batch request must be a "
+                    "JSON list or an object "
+                    "containing a records list."
+                )
+
+            request_format = (
+                "json_records"
+            )
+
+        else:
+            return jsonify(
+                {
+                    "error": (
+                        "Submit either a multipart "
+                        "CSV file using the file "
+                        "field or an application/json "
+                        "batch request."
+                    )
+                }
+            ), 415
+
+        if len(records) == 0:
+            raise RequestValidationError(
+                "The batch request must contain "
+                "at least one record."
+            )
+
         predictions = predict_records(
             records
         )
 
-        prediction_results = [
+        prediction_records = [
             {
-                "record_number": record_number,
-                "prediction": prediction,
+                "record_number": (
+                    record_number
+                ),
+                "prediction": (
+                    prediction_value
+                ),
             }
-            for record_number, prediction in enumerate(
+            for (
+                record_number,
+                prediction_value,
+            ) in enumerate(
                 predictions,
                 start=1,
             )
@@ -416,15 +529,22 @@ def predict_batch():
 
         return jsonify(
             {
-                "predictions": prediction_results,
+                "model": (
+                    "Tuned Random Forest"
+                ),
                 "prediction_field": (
                     "Product_Store_Sales_Total"
                 ),
-                "record_count": len(
-                    prediction_results
+                "predictions": (
+                    prediction_records
                 ),
-                "model": (
-                    "Tuned Random Forest"
+                "record_count": (
+                    len(
+                        prediction_records
+                    )
+                ),
+                "request_format": (
+                    request_format
                 ),
                 "unseen_category_note": (
                     "Supermarket Type3 is accepted "
@@ -437,7 +557,9 @@ def predict_batch():
     except RequestValidationError as error:
         return jsonify(
             {
-                "error": str(error)
+                "error": str(
+                    error
+                )
             }
         ), 400
 
@@ -449,12 +571,11 @@ def predict_batch():
         return jsonify(
             {
                 "error": (
-                    "Batch prediction could not "
-                    "be completed."
+                    "Batch prediction could "
+                    "not be completed."
                 )
             }
         ), 500
-
 
 if __name__ == "__main__":
     app.run(
