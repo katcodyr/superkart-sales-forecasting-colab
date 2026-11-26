@@ -474,25 +474,36 @@ with batch_tab:
             )
 
             if generate_batch_predictions:
-                batch_payload = {
-                    "records": (
-                        validated_batch_data
-                        .to_dict(
-                            orient="records"
-                        )
+                validated_batch_csv = (
+                    validated_batch_data
+                    .to_csv(
+                        index=False
+                    )
+                    .encode(
+                        "utf-8"
+                    )
+                )
+
+                batch_files = {
+                    "file": (
+                        (
+                            uploaded_batch_file.name
+                            or "Batch_Data_SuperKart.csv"
+                        ),
+                        validated_batch_csv,
+                        "text/csv",
                     )
                 }
 
                 batch_response = (
                     requests.post(
                         BATCH_ENDPOINT,
-                        json=batch_payload,
+                        files=batch_files,
                         timeout=(
                             REQUEST_TIMEOUT_SECONDS
                         ),
                     )
                 )
-
                 batch_result = (
                     parse_response(
                         batch_response
